@@ -73,7 +73,7 @@ public class TileMatrixPatch
     }
 
     [MethodImpl(MethodImplOptions.Synchronized)]
-    private unsafe int PatchLand(TileMatrix matrix, string dataPath, string indexPath)
+    private static unsafe int PatchLand(TileMatrix matrix, string dataPath, string indexPath)
     {
         using var fsData = new FileStream(dataPath, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var fsIndex = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read);

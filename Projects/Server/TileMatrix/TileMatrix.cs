@@ -26,12 +26,11 @@ public class TileMatrix
 {
     private static readonly ILogger logger = LogFactory.GetLogger(typeof(TileMatrix));
     private static readonly List<TileMatrix> _instances = new();
+    private static readonly StaticTile[][][] _emptyStaticBlock;
+    private static readonly LandTile[] _invalidLandBlock = new LandTile[196];
 
     private readonly StaticTile[][][][][] _staticTiles;
     private readonly LandTile[][][] _landTiles;
-    private readonly LandTile[] _invalidLandBlock;
-    private readonly StaticTile[][][] _emptyStaticBlock;
-    private readonly UOPIndex _mapIndex;
     private readonly int _fileIndex;
     private readonly Map _map;
     private readonly int[][] _staticPatches;
@@ -41,10 +40,6 @@ public class TileMatrix
     public TileMatrixPatch Patch { get; }
     public int BlockWidth { get; }
     public int BlockHeight { get; }
-    public FileStream MapStream { get; }
-    public FileStream IndexStream { get; }
-    public FileStream DataStream { get; }
-    public BinaryReader IndexReader { get; }
 
     public static bool Pre6000ClientSupport { get; private set; }
 
@@ -55,85 +50,11 @@ public class TileMatrix
         Pre6000ClientSupport = ServerConfiguration.GetSetting("maps.enablePre6000Trammel", isPre6000Trammel);
     }
 
-    public TileMatrix(Map owner, int fileIndex, int mapID, int width, int height)
+    public static bool IsInvalidLandBlock(LandTile[] landblock) => landblock == _invalidLandBlock;
+
+    static TileMatrix()
     {
-        lock (_instances)
-        {
-            for (var i = 0; i < _instances.Count; ++i)
-            {
-                var tm = _instances[i];
-
-                if (tm._fileIndex == fileIndex)
-                {
-                    lock (_fileShare)
-                    {
-                        lock (tm._fileShare)
-                        {
-                            tm._fileShare.Add(this);
-                            _fileShare.Add(tm);
-                        }
-                    }
-                }
-            }
-
-            _instances.Add(this);
-        }
-
-        _fileIndex = fileIndex;
-        BlockWidth = width >> 3;
-        BlockHeight = height >> 3;
-
-        _map = owner;
-
-        if (fileIndex != 0x7F)
-        {
-            var mapFileIndex = Pre6000ClientSupport && mapID == 1 ? 0 : fileIndex;
-
-            var mapPath = Core.FindDataFile($"map{mapFileIndex}.mul", false);
-
-            if (mapPath != null)
-            {
-                MapStream = new FileStream(mapPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            }
-            else
-            {
-                mapPath = Core.FindDataFile($"map{mapFileIndex}LegacyMUL.uop", false);
-
-                if (mapPath != null)
-                {
-                    MapStream = new FileStream(mapPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                    _mapIndex = new UOPIndex(MapStream);
-                }
-                else
-                {
-                    logger.Warning("{File} was not found.", $"map{mapFileIndex}.mul");
-                }
-            }
-
-            var indexPath = Core.FindDataFile($"staidx{mapFileIndex}.mul", false);
-
-            if (indexPath != null)
-            {
-                IndexStream = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                IndexReader = new BinaryReader(IndexStream);
-            }
-            else
-            {
-                logger.Warning("{File} was not found.", $"staidx{mapFileIndex}.mul");
-            }
-
-            var staticsPath = Core.FindDataFile($"statics{mapFileIndex}.mul", false);
-
-            if (staticsPath != null)
-            {
-                DataStream = new FileStream(staticsPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            }
-            else
-            {
-                logger.Warning("{File} was not found.", $"statics{fileIndex}.mul");
-            }
-        }
-
+        // This works since we assume each block is 8 tiles.
         _emptyStaticBlock = new StaticTile[8][][];
 
         for (var i = 0; i < 8; ++i)
@@ -142,16 +63,103 @@ public class TileMatrix
 
             for (var j = 0; j < 8; ++j)
             {
-                _emptyStaticBlock[i][j] = new StaticTile[0];
+                _emptyStaticBlock[i][j] = Array.Empty<StaticTile>();
+            }
+        }
+    }
+
+    public TileMatrix(Map owner, int fileIndex, int mapID, int width, int height)
+    {
+        for (var i = 0; i < _instances.Count; ++i)
+        {
+            var tm = _instances[i];
+
+            if (tm._fileIndex == fileIndex)
+            {
+                tm._fileShare.Add(this);
+                _fileShare.Add(tm);
+                break;
             }
         }
 
-        _invalidLandBlock = new LandTile[196];
+        _instances.Add(this);
 
-        _landTiles = new LandTile[BlockWidth][][];
-        _staticTiles = new StaticTile[BlockWidth][][][][];
+        _fileIndex = fileIndex;
+        BlockWidth = width >> 3;
+        BlockHeight = height >> 3;
+
+        _map = owner;
+
         _staticPatches = new int[BlockWidth][];
         _landPatches = new int[BlockWidth][];
+
+        if (fileIndex == 0x7F)
+        {
+            return;
+        }
+
+        FileStream mapStream = null;
+        UOPIndex uopMapIndex = null;
+
+        var mapFileIndex = Pre6000ClientSupport && mapID == 1 ? 0 : fileIndex;
+
+        var mapPath = Core.FindDataFile($"map{mapFileIndex}.mul", false);
+
+        if (mapPath != null)
+        {
+            mapStream = new FileStream(mapPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        }
+        else
+        {
+            mapPath = Core.FindDataFile($"map{mapFileIndex}LegacyMUL.uop", false);
+
+            if (mapPath != null)
+            {
+                mapStream = new FileStream(mapPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                uopMapIndex = new UOPIndex(mapStream);
+            }
+            else
+            {
+                logger.Warning("{File} was not found.", $"map{mapFileIndex}.mul");
+            }
+        }
+
+        _landTiles = new LandTile[BlockWidth][][];
+
+        ReadAllLandBlocks(mapStream, uopMapIndex);
+        mapStream?.Dispose();
+
+        BinaryReader staticIndexReader = null;
+
+        var indexPath = Core.FindDataFile($"staidx{mapFileIndex}.mul", false);
+
+        if (indexPath != null)
+        {
+            var stream = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            staticIndexReader = new BinaryReader(stream);
+        }
+        else
+        {
+            logger.Warning("{File} was not found.", $"staidx{mapFileIndex}.mul");
+        }
+
+        var staticsPath = Core.FindDataFile($"statics{mapFileIndex}.mul", false);
+
+        if (staticsPath != null)
+        {
+            var staticStream = new FileStream(staticsPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+            _staticTiles = new StaticTile[BlockWidth][][][][];
+            ReadAllStaticBlocks(staticIndexReader, staticStream);
+
+            staticStream.Dispose();
+        }
+        else
+        {
+            logger.Warning("{File} was not found.", $"statics{fileIndex}.mul");
+        }
+
+        staticIndexReader?.Dispose();
 
         Patch = new TileMatrixPatch(this, fileIndex);
     }
@@ -173,10 +181,9 @@ public class TileMatrix
         _staticPatches[x][y >> 5] |= 1 << (y & 0x1F);
     }
 
-    [MethodImpl(MethodImplOptions.Synchronized)]
     public StaticTile[][][] GetStaticBlock(int x, int y)
     {
-        if (x < 0 || y < 0 || x >= BlockWidth || y >= BlockHeight || DataStream == null || IndexStream == null)
+        if (x < 0 || y < 0 || x >= BlockWidth || y >= BlockHeight)
         {
             return _emptyStaticBlock;
         }
@@ -187,38 +194,33 @@ public class TileMatrix
 
         if (tiles == null)
         {
-            lock (_fileShare)
+            for (var i = 0; tiles == null && i < _fileShare.Count; ++i)
             {
-                for (var i = 0; tiles == null && i < _fileShare.Count; ++i)
+                var shared = _fileShare[i];
+
+                // Out of bounds
+                if (x >= shared.BlockWidth || y >= shared.BlockHeight)
                 {
-                    var shared = _fileShare[i];
+                    continue;
+                }
 
-                    lock (shared)
-                    {
-                        if (x < shared.BlockWidth && y < shared.BlockHeight)
-                        {
-                            var theirTiles = shared._staticTiles[x];
+                var theirTiles = shared._staticTiles[x];
 
-                            if (theirTiles != null)
-                            {
-                                tiles = theirTiles[y];
-                            }
+                // No shared tile matrix
+                if (theirTiles == null)
+                {
+                    continue;
+                }
 
-                            if (tiles != null)
-                            {
-                                var theirBits = shared._staticPatches[x];
+                tiles = theirTiles[y];
 
-                                if (theirBits != null && (theirBits[y >> 5] & (1 << (y & 0x1F))) != 0)
-                                {
-                                    tiles = null;
-                                }
-                            }
-                        }
-                    }
+                var theirBits = shared._staticPatches[x];
+
+                if (theirBits != null && (theirBits[y >> 5] & (1 << (y & 0x1F))) != 0)
+                {
+                    tiles = null;
                 }
             }
-
-            tiles ??= ReadStaticBlock(x, y);
 
             _staticTiles[x][y] = tiles;
         }
@@ -294,7 +296,7 @@ public class TileMatrix
     [MethodImpl(MethodImplOptions.Synchronized)]
     public LandTile[] GetLandBlock(int x, int y)
     {
-        if (x < 0 || y < 0 || x >= BlockWidth || y >= BlockHeight || MapStream == null)
+        if (x < 0 || y < 0 || x >= BlockWidth || y >= BlockHeight)
         {
             return _invalidLandBlock;
         }
@@ -308,38 +310,33 @@ public class TileMatrix
             return tiles;
         }
 
-        lock (_fileShare)
+        for (var i = 0; tiles == null && i < _fileShare.Count; ++i)
         {
-            for (var i = 0; tiles == null && i < _fileShare.Count; ++i)
+            var shared = _fileShare[i];
+
+            lock (shared)
             {
-                var shared = _fileShare[i];
-
-                lock (shared)
+                if (x < shared.BlockWidth && y < shared.BlockHeight)
                 {
-                    if (x < shared.BlockWidth && y < shared.BlockHeight)
+                    var theirTiles = shared._landTiles[x];
+
+                    if (theirTiles != null)
                     {
-                        var theirTiles = shared._landTiles[x];
+                        tiles = theirTiles[y];
+                    }
 
-                        if (theirTiles != null)
+                    if (tiles != null)
+                    {
+                        var theirBits = shared._landPatches[x];
+
+                        if (theirBits != null && (theirBits[y >> 5] & (1 << (y & 0x1F))) != 0)
                         {
-                            tiles = theirTiles[y];
-                        }
-
-                        if (tiles != null)
-                        {
-                            var theirBits = shared._landPatches[x];
-
-                            if (theirBits != null && (theirBits[y >> 5] & (1 << (y & 0x1F))) != 0)
-                            {
-                                tiles = null;
-                            }
+                            tiles = null;
                         }
                     }
                 }
             }
         }
-
-        tiles ??= ReadLandBlock(x, y);
 
         _landTiles[x][y] = tiles;
 
@@ -355,88 +352,105 @@ public class TileMatrix
 
     private TileList[][] m_Lists;
 
-    private StaticTile[] m_TileBuffer = new StaticTile[128];
-
-    [MethodImpl(MethodImplOptions.Synchronized)]
-    private unsafe StaticTile[][][] ReadStaticBlock(int x, int y)
+    private unsafe void ReadAllStaticBlocks(BinaryReader staticIndexReader, FileStream staticStream)
     {
-        try
+        if (staticIndexReader == null || staticStream == null)
         {
-            IndexReader.BaseStream.Seek((x * BlockHeight + y) * 12, SeekOrigin.Begin);
-
-            var lookup = IndexReader.ReadInt32();
-            var length = IndexReader.ReadInt32();
-
-            if (lookup < 0 || length <= 0)
-            {
-                return _emptyStaticBlock;
-            }
-
-            var count = length / 7;
-
-            DataStream.Seek(lookup, SeekOrigin.Begin);
-
-            if (m_TileBuffer.Length < count)
-            {
-                m_TileBuffer = new StaticTile[count];
-            }
-
-            var staTiles = m_TileBuffer;
-
-            fixed (StaticTile* pTiles = staTiles)
-            {
-                DataStream.Read(new Span<byte>(pTiles, length));
-
-                if (m_Lists == null)
-                {
-                    m_Lists = new TileList[8][];
-
-                    for (var i = 0; i < 8; ++i)
-                    {
-                        m_Lists[i] = new TileList[8];
-
-                        for (var j = 0; j < 8; ++j)
-                        {
-                            m_Lists[i][j] = new TileList();
-                        }
-                    }
-                }
-
-                var lists = m_Lists;
-
-                StaticTile* pCur = pTiles, pEnd = pTiles + count;
-
-                while (pCur < pEnd)
-                {
-                    lists[pCur->m_X & 0x7][pCur->m_Y & 0x7].Add(pCur);
-
-                    pCur = pCur + 1;
-                }
-
-                var tiles = new StaticTile[8][][];
-
-                for (var i = 0; i < 8; ++i)
-                {
-                    tiles[i] = new StaticTile[8][];
-
-                    for (var j = 0; j < 8; ++j)
-                    {
-                        tiles[i][j] = lists[i][j].ToArray();
-                    }
-                }
-
-                return tiles;
-            }
+            return;
         }
-        catch (EndOfStreamException ex)
-        {
-            if (Core.Now >= m_NextStaticWarning)
-            {
-                Console.WriteLine("Warning: Static EOS for {0} ({1}, {2})", _map, x, y);
-                m_NextStaticWarning = Core.Now + TimeSpan.FromMinutes(1.0);
-            }
 
-            return _emptyStaticBlock;
+        var tileBuffer = new StaticTile[128];
+
+        for (var x = 0; x < BlockWidth; x++)
+        {
+            _staticTiles[x] = new StaticTile[BlockHeight][][][];
+
+            for (var y = 0; y < BlockHeight; y++)
+            {
+                try
+                {
+                    staticIndexReader.BaseStream.Seek((x * BlockHeight + y) * 12, SeekOrigin.Begin);
+
+                    var lookup = staticIndexReader.ReadInt32();
+                    var length = staticIndexReader.ReadInt32();
+
+                    if (lookup < 0 || length <= 0)
+                    {
+                        _staticTiles[x][y] = _emptyStaticBlock;
+                        break;
+                    }
+
+                    var count = length / 7;
+
+                    staticStream.Seek(lookup, SeekOrigin.Begin);
+
+                    if (tileBuffer.Length < count)
+                    {
+                        tileBuffer = new StaticTile[count];
+                    }
+
+                    var staTiles = tileBuffer;
+
+                    fixed (StaticTile* pTiles = staTiles)
+                    {
+                        int bytesRead = staticStream.Read(new Span<byte>(pTiles, length));
+                        if (bytesRead < length)
+                        {
+                            logger.Warning("Not enough bytes read from {File}.", staticStream.Name);
+                        }
+
+                        if (m_Lists == null)
+                        {
+                            m_Lists = new TileList[8][];
+
+                            for (var i = 0; i < 8; ++i)
+                            {
+                                m_Lists[i] = new TileList[8];
+
+                                for (var j = 0; j < 8; ++j)
+                                {
+                                    m_Lists[i][j] = new TileList();
+                                }
+                            }
+                        }
+
+                        var lists = m_Lists;
+
+                        StaticTile* pCur = pTiles, pEnd = pTiles + count;
+
+                        while (pCur < pEnd)
+                        {
+                            lists[pCur->m_X & 0x7][pCur->m_Y & 0x7].Add(pCur);
+
+                            pCur += 1;
+                        }
+
+                        var tiles = new StaticTile[8][][];
+
+                        for (var i = 0; i < 8; ++i)
+                        {
+                            tiles[i] = new StaticTile[8][];
+
+                            for (var j = 0; j < 8; ++j)
+                            {
+                                tiles[i][j] = lists[i][j].ToArray();
+                            }
+                        }
+
+                        _staticTiles[x][y] = tiles;
+                    }
+                }
+                catch (EndOfStreamException ex)
+                {
+                    if (Core.Now >= m_NextStaticWarning)
+                    {
+                        logger.Warning(ex, "Warning: End of stream for map file for {Map} ({X}, {Y})", _map, x, y);
+                        m_NextStaticWarning = Core.Now + TimeSpan.FromSeconds(10);
+                    }
+
+                    _staticTiles[x][y] = _emptyStaticBlock;
+                }
+            }
         }
     }
 
@@ -453,47 +467,55 @@ public class TileMatrix
         throw new Exception("No assemblies were loaded, therefore we cannot load TileMatrix.");
     }
 
-    [MethodImpl(MethodImplOptions.Synchronized)]
-    private unsafe LandTile[] ReadLandBlock(int x, int y)
+    private unsafe void ReadAllLandBlocks(FileStream mapStream, UOPIndex uopIndex)
     {
-        try
+        if (mapStream == null)
         {
-            var offset = (x * BlockHeight + y) * 196 + 4;
-
-            if (_mapIndex != null)
-            {
-                offset = _mapIndex.Lookup(offset);
-            }
-
-            MapStream.Seek(offset, SeekOrigin.Begin);
-
-            var tiles = new LandTile[64];
-
-            fixed (LandTile* pTiles = tiles)
-            {
-                MapStream.Read(new Span<byte>(pTiles, 192));
-            }
-
-            return tiles;
+            return;
         }
-        catch (Exception ex)
+
+        for (var x = 0; x < BlockWidth; x++)
         {
-            if (Core.Now >= m_NextLandWarning)
+            _landTiles[x] = new LandTile[BlockHeight][];
+
+            for (var y = 0; y < BlockHeight; y++)
             {
-                Console.WriteLine("Warning: Land EOS for {0} ({1}, {2})", _map, x, y);
-                m_NextLandWarning = Core.Now + TimeSpan.FromMinutes(1.0);
+                try
+                {
+                    var offset = (x * BlockHeight + y) * 196 + 4;
+
+                    if (uopIndex != null)
+                    {
+                        offset = uopIndex.Lookup(offset);
+                    }
+
+                    mapStream.Seek(offset, SeekOrigin.Begin);
+
+                    var tiles = new LandTile[64];
+
+                    fixed (LandTile* pTiles = tiles)
+                    {
+                        var bytesRead = mapStream.Read(new Span<byte>(pTiles, 192));
+                        if (bytesRead < 192)
+                        {
+                            logger.Warning("Not enough bytes read from {File}.", mapStream.Name);
+                        }
+                    }
+
+                    _landTiles[x][y] = tiles;
+                }
+                catch (Exception ex)
+                {
+                    if (Core.Now >= m_NextLandWarning)
+                    {
+                        logger.Warning(ex, "Warning: End of stream for map file for {Map} ({X}, {Y})", _map, x, y);
+                        m_NextLandWarning = Core.Now + TimeSpan.FromSeconds(10);
+                    }
+
+                    _landTiles[x][y] = _invalidLandBlock;
+                }
             }
-
-            return _invalidLandBlock;
         }
-    }
-
-    public void Dispose()
-    {
-        _mapIndex?.Close();
-        MapStream?.Close();
-        DataStream?.Close();
-        IndexReader?.Close();
     }
 }
 
@@ -505,19 +527,11 @@ public struct LandTile
 
     public int ID => m_ID;
 
-    public int Z { get => m_Z; set => m_Z = (sbyte)value; }
-
-    public int Height => 0;
+    public int Z => m_Z;
 
     public bool Ignored => m_ID is 2 or 0x1DB or >= 0x1AE and <= 0x1B5;
 
     public LandTile(short id, sbyte z)
-    {
-        m_ID = id;
-        m_Z = z;
-    }
-
-    public void Set(short id, sbyte z)
     {
         m_ID = id;
         m_Z = z;
@@ -595,10 +609,7 @@ public class UOPIndex
             m_Order = 0;
         }
 
-        public int CompareTo(UOPEntry other)
-        {
-            return m_Order.CompareTo(other.m_Order);
-        }
+        public int CompareTo(UOPEntry other) => m_Order.CompareTo(other.m_Order);
     }
 
     private class OffsetComparer : IComparer<UOPEntry>
