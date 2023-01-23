@@ -7,11 +7,11 @@ namespace Server;
 public class TileList
 {
     private static readonly StaticTile[] m_EmptyTiles = Array.Empty<StaticTile>();
-    private StaticTile[] m_Tiles;
+    private StaticTile[] _tiles;
 
     public TileList()
     {
-        m_Tiles = new StaticTile[8];
+        _tiles = new StaticTile[8];
         Count = 0;
     }
 
@@ -19,37 +19,40 @@ public class TileList
 
     public void AddRange(StaticTile[] tiles)
     {
-        if (Count + tiles.Length > m_Tiles.Length)
+        if (Count + tiles.Length > _tiles.Length)
         {
-            var old = m_Tiles;
-            m_Tiles = new StaticTile[(Count + tiles.Length) * 2];
+            var old = _tiles;
+            _tiles = new StaticTile[(Count + tiles.Length) * 2];
 
             for (var i = 0; i < old.Length; ++i)
             {
-                m_Tiles[i] = old[i];
+                _tiles[i] = old[i];
             }
         }
 
         for (var i = 0; i < tiles.Length; ++i)
         {
-            m_Tiles[Count++] = tiles[i];
+            _tiles[Count++] = tiles[i];
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public unsafe void Add(StaticTile* ptr) => Add(Marshal.PtrToStructure<StaticTile>((nint)ptr));
+    public unsafe void Add(StaticTile* ptr)
+    {
+        Add(Marshal.PtrToStructure<StaticTile>((nint)ptr));
+    }
 
     public void Add(StaticTile tile)
     {
         TryResize();
-        m_Tiles[Count] = tile;
+        _tiles[Count] = tile;
         ++Count;
     }
 
     public void Add(ushort id, byte x, byte y, sbyte z, short hue = 0)
     {
         TryResize();
-        ref var tile = ref m_Tiles[Count];
+        ref var tile = ref _tiles[Count];
         tile.m_ID = id;
         tile.m_X = x;
         tile.m_Y = y;
@@ -61,22 +64,18 @@ public class TileList
     public void Add(ushort id, sbyte z)
     {
         TryResize();
-        m_Tiles[Count].m_ID = id;
-        m_Tiles[Count].m_Z = z;
+        _tiles[Count].m_ID = id;
+        _tiles[Count].m_Z = z;
         ++Count;
     }
 
     private void TryResize()
     {
-        if (Count + 1 > m_Tiles.Length)
+        if (Count + 1 > _tiles.Length)
         {
-            var old = m_Tiles;
-            m_Tiles = new StaticTile[old.Length * 2];
-
-            for (var i = 0; i < old.Length; ++i)
-            {
-                m_Tiles[i] = old[i];
-            }
+            var old = _tiles;
+            _tiles = new StaticTile[old.Length * 2];
+            Array.Copy(old, _tiles, old.Length);
         }
     }
 
@@ -91,7 +90,7 @@ public class TileList
 
         for (var i = 0; i < Count; ++i)
         {
-            tiles[i] = m_Tiles[i];
+            tiles[i] = _tiles[i];
         }
 
         Count = 0;
