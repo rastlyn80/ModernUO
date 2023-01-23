@@ -54,6 +54,8 @@ public class TileMatrix
 
     static TileMatrix()
     {
+        var emptyTiles = Array.Empty<StaticTile>();
+
         // This works since we assume each block is 8 tiles.
         _emptyStaticBlock = new StaticTile[8][][];
 
@@ -63,7 +65,7 @@ public class TileMatrix
 
             for (var j = 0; j < 8; ++j)
             {
-                _emptyStaticBlock[i][j] = Array.Empty<StaticTile>();
+                _emptyStaticBlock[i][j] = emptyTiles;
             }
         }
     }
@@ -181,16 +183,16 @@ public class TileMatrix
         _staticPatches[x][y >> 5] |= 1 << (y & 0x1F);
     }
 
-    public StaticTile[][][] GetStaticBlock(int x, int y)
+    public StaticTile[][][] GetStaticBlock(int blockX, int blockY)
     {
-        if (x < 0 || y < 0 || x >= BlockWidth || y >= BlockHeight)
+        if (blockX < 0 || blockY < 0 || blockX >= BlockWidth || blockY >= BlockHeight)
         {
             return _emptyStaticBlock;
         }
 
-        _staticTiles[x] ??= new StaticTile[BlockHeight][][][];
+        _staticTiles[blockX] ??= new StaticTile[BlockHeight][][][];
 
-        var tiles = _staticTiles[x][y];
+        var tiles = _staticTiles[blockX][blockY];
 
         if (tiles == null)
         {
@@ -199,12 +201,12 @@ public class TileMatrix
                 var shared = _fileShare[i];
 
                 // Out of bounds
-                if (x >= shared.BlockWidth || y >= shared.BlockHeight)
+                if (blockX >= shared.BlockWidth || blockY >= shared.BlockHeight)
                 {
                     continue;
                 }
 
-                var theirTiles = shared._staticTiles[x];
+                var theirTiles = shared._staticTiles[blockX];
 
                 // No shared tile matrix
                 if (theirTiles == null)
@@ -212,17 +214,17 @@ public class TileMatrix
                     continue;
                 }
 
-                tiles = theirTiles[y];
+                tiles = theirTiles[blockY];
 
-                var theirBits = shared._staticPatches[x];
+                var theirBits = shared._staticPatches[blockX];
 
-                if (theirBits != null && (theirBits[y >> 5] & (1 << (y & 0x1F))) != 0)
+                if (theirBits != null && (theirBits[blockY >> 5] & (1 << (blockY & 0x1F))) != 0)
                 {
                     tiles = null;
                 }
             }
 
-            _staticTiles[x][y] = tiles;
+            _staticTiles[blockX][blockY] = tiles;
         }
 
         return tiles;
@@ -350,8 +352,6 @@ public class TileMatrix
         return tiles[((y & 0x7) << 3) + (x & 0x7)];
     }
 
-    private TileList[][] m_Lists;
-
     private unsafe void ReadAllStaticBlocks(BinaryReader staticIndexReader, FileStream staticStream)
     {
         if (staticIndexReader == null || staticStream == null)
@@ -360,6 +360,16 @@ public class TileMatrix
         }
 
         var tileBuffer = new StaticTile[128];
+        var tileLists = new TileList[8][];
+        for (var i = 0; i < 8; ++i)
+        {
+            tileLists[i] = new TileList[8];
+
+            for (var j = 0; j < 8; ++j)
+            {
+                tileLists[i][j] = new TileList();
+            }
+        }
 
         for (var x = 0; x < BlockWidth; x++)
         {
@@ -399,28 +409,12 @@ public class TileMatrix
                             logger.Warning("Not enough bytes read from {File}.", staticStream.Name);
                         }
 
-                        if (m_Lists == null)
-                        {
-                            m_Lists = new TileList[8][];
-
-                            for (var i = 0; i < 8; ++i)
-                            {
-                                m_Lists[i] = new TileList[8];
-
-                                for (var j = 0; j < 8; ++j)
-                                {
-                                    m_Lists[i][j] = new TileList();
-                                }
-                            }
-                        }
-
-                        var lists = m_Lists;
-
                         StaticTile* pCur = pTiles, pEnd = pTiles + count;
 
                         while (pCur < pEnd)
                         {
-                            lists[pCur->m_X & 0x7][pCur->m_Y & 0x7].Add(pCur);
+                            // X/Y must be between 0 and 7
+                            tileLists[pCur->m_X][pCur->m_Y].Add(pCur);
 
                             pCur += 1;
                         }
@@ -433,7 +427,14 @@ public class TileMatrix
 
                             for (var j = 0; j < 8; ++j)
                             {
-                                tiles[i][j] = lists[i][j].ToArray();
+                                if (tileLists[i][j].Count == 0)
+                                {
+                                    tiles[i][j] = _emptyStaticBlock[i][j];
+                                }
+                                else
+                                {
+                                    tiles[i][j] = tileLists[i][j].ToArray();
+                                }
                             }
                         }
 
@@ -482,6 +483,7 @@ public class TileMatrix
             {
                 try
                 {
+                    // Offset for entry is 4 (header) * (4 + (3 * 64))
                     var offset = (x * BlockHeight + y) * 196 + 4;
 
                     if (uopIndex != null)
