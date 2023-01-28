@@ -30,17 +30,17 @@ internal static class TileMatrixLoader
         var stopwatch = Stopwatch.StartNew();
         Exception exception = null;
 
-        try
-        {
+        // try
+        // {
             foreach (var m in Map.AllMaps)
             {
                 m.Tiles.Force(); // Forces the map file stream references to load
             }
-        }
-        catch (Exception ex)
-        {
-            exception = ex;
-        }
+        // }
+        // catch (Exception ex)
+        // {
+        //     exception = ex;
+        // }
 
         stopwatch.Stop();
 

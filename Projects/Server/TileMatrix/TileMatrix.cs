@@ -371,28 +371,30 @@ public class TileMatrix
             }
         }
 
-        for (var x = 0; x < BlockWidth; x++)
+        var x = 0;
+        var y = 0;
+
+        try
         {
-            _staticTiles[x] = new StaticTile[BlockHeight][][][];
-
-            for (var y = 0; y < BlockHeight; y++)
+            do
             {
-                try
+                if (y == 0)
                 {
-                    staticIndexReader.BaseStream.Seek((x * BlockHeight + y) * 12, SeekOrigin.Begin);
+                    _staticTiles[x] = new StaticTile[BlockHeight][][][];
+                }
 
-                    var lookup = staticIndexReader.ReadInt32();
-                    var length = staticIndexReader.ReadInt32();
+                var lookup = staticIndexReader.ReadInt32();
+                var length = staticIndexReader.ReadInt32();
+                staticIndexReader.ReadUInt32();
 
-                    if (lookup < 0 || length <= 0)
-                    {
-                        _staticTiles[x][y] = _emptyStaticBlock;
-                        break;
-                    }
-
+                if (lookup != -1 && length > 0)
+                {
                     var count = length / 7;
 
-                    staticStream.Seek(lookup, SeekOrigin.Begin);
+                    if (staticStream.Position != lookup)
+                    {
+                        staticStream.Seek(lookup, SeekOrigin.Begin);
+                    }
 
                     if (tileBuffer.Length < count)
                     {
@@ -411,12 +413,11 @@ public class TileMatrix
 
                         StaticTile* pCur = pTiles, pEnd = pTiles + count;
 
+                        // We have to loop them and stage them because they aren't in a particular order.
                         while (pCur < pEnd)
                         {
                             // X/Y must be between 0 and 7
-                            tileLists[pCur->m_X][pCur->m_Y].Add(pCur);
-
-                            pCur += 1;
+                            tileLists[pCur->m_X][pCur->m_Y].Add(pCur++);
                         }
 
                         var tiles = new StaticTile[8][][];
@@ -441,17 +442,27 @@ public class TileMatrix
                         _staticTiles[x][y] = tiles;
                     }
                 }
-                catch (EndOfStreamException ex)
+                else
                 {
-                    if (Core.Now >= m_NextStaticWarning)
-                    {
-                        logger.Warning(ex, "Warning: End of stream for map file for {Map} ({X}, {Y})", _map, x, y);
-                        m_NextStaticWarning = Core.Now + TimeSpan.FromSeconds(10);
-                    }
-
                     _staticTiles[x][y] = _emptyStaticBlock;
                 }
+
+                if (++y >= BlockHeight)
+                {
+                    y = 0;
+                    x++;
+                }
+            } while (x < BlockWidth);
+        }
+        catch (EndOfStreamException ex)
+        {
+            if (Core.Now >= m_NextStaticWarning)
+            {
+                logger.Warning(ex, "Warning: End of stream for map file for {Map} ({X}, {Y})", _map, x, y);
+                m_NextStaticWarning = Core.Now + TimeSpan.FromSeconds(10);
             }
+
+            _staticTiles[x][y] = _emptyStaticBlock;
         }
     }
 
@@ -475,48 +486,57 @@ public class TileMatrix
             return;
         }
 
-        for (var x = 0; x < BlockWidth; x++)
+        var x = 0;
+        var y = 0;
+
+        try
         {
-            _landTiles[x] = new LandTile[BlockHeight][];
-
-            for (var y = 0; y < BlockHeight; y++)
+            do
             {
-                try
+                if (y == 0)
                 {
-                    // Offset for entry is 4 (header) * (4 + (3 * 64))
-                    var offset = (x * BlockHeight + y) * 196 + 4;
-
-                    if (uopIndex != null)
-                    {
-                        offset = uopIndex.Lookup(offset);
-                    }
-
-                    mapStream.Seek(offset, SeekOrigin.Begin);
-
-                    var tiles = new LandTile[64];
-
-                    fixed (LandTile* pTiles = tiles)
-                    {
-                        var bytesRead = mapStream.Read(new Span<byte>(pTiles, 192));
-                        if (bytesRead < 192)
-                        {
-                            logger.Warning("Not enough bytes read from {File}.", mapStream.Name);
-                        }
-                    }
-
-                    _landTiles[x][y] = tiles;
+                    _landTiles[x] = new LandTile[BlockHeight][];
                 }
-                catch (Exception ex)
+
+                // Offset for entry is 4 (header) * (4 + (3 * 64))
+                var offset = (x * BlockHeight + y) * 196 + 4;
+
+                if (uopIndex != null)
                 {
-                    if (Core.Now >= m_NextLandWarning)
-                    {
-                        logger.Warning(ex, "Warning: End of stream for map file for {Map} ({X}, {Y})", _map, x, y);
-                        m_NextLandWarning = Core.Now + TimeSpan.FromSeconds(10);
-                    }
-
-                    _landTiles[x][y] = _invalidLandBlock;
+                    offset = uopIndex.Lookup(offset);
                 }
+
+                mapStream.Seek(offset, SeekOrigin.Begin);
+
+                var tiles = new LandTile[64];
+
+                fixed (LandTile* pTiles = tiles)
+                {
+                    var bytesRead = mapStream.Read(new Span<byte>(pTiles, 192));
+                    if (bytesRead < 192)
+                    {
+                        logger.Warning("Not enough bytes read from {File}.", mapStream.Name);
+                    }
+                }
+
+                _landTiles[x][y] = tiles;
+
+                if (++y >= BlockHeight)
+                {
+                    y = 0;
+                    x++;
+                }
+            } while (x < BlockWidth);
+        }
+        catch (Exception ex)
+        {
+            if (Core.Now >= m_NextLandWarning)
+            {
+                logger.Warning(ex, "Warning: End of stream for map file for {Map} ({X}, {Y})", _map, x, y);
+                m_NextLandWarning = Core.Now + TimeSpan.FromSeconds(10);
             }
+
+            _landTiles[x][y] = _invalidLandBlock;
         }
     }
 }
