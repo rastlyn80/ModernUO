@@ -1,20 +1,20 @@
 using System;
 using Server.Text;
 
-namespace Server.Ethics.Evil
-{
-    public sealed class UnholySense : Power
-    {
-        public UnholySense() =>
-            m_Definition = new PowerDefinition(
-                0,
-                "Unholy Sense",
-                "Drewrok Velgo",
-                ""
-            );
+namespace Server.Ethics.Evil;
 
-        public override void BeginInvoke(Player from)
-        {
+public sealed class UnholySense : Power
+{
+    public UnholySense() =>
+        m_Definition = new PowerDefinition(
+            0,
+            "Unholy Sense",
+            "Drewrok Velgo",
+            ""
+        );
+
+    public override void BeginInvoke(Player from)
+    {
             var opposition = Ethic.Hero;
 
             var enemyCount = 0;
@@ -93,5 +93,4 @@ namespace Server.Ethics.Evil
 
             FinishInvoke(from);
         }
-    }
 }
